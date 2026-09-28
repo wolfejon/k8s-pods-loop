@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pods — 12s pokeable loop</title>
+<style>
+  :root {
+    --paper: #E5DECE;
+    --navy: #16234E;
+    --plum: #5E286D;
+    --pink: #F858A2;
+    --coral: #EF8653;
+    --ink: #1A1A18;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #111; }
+  body {
+    display: grid;
+    place-items: center;
+    font-family: "Arial Narrow", "Helvetica Condensed", Impact, sans-serif;
+    color: var(--ink);
+  }
+  .stage {
+    position: relative;
+    width: min(100vw, 720px);
+    aspect-ratio: 16 / 10;
+    background: var(--paper);
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.45);
+    cursor: pointer;
+    user-select: none;
+  }
+  .grain {
+    pointer-events: none;
+    position: absolute; inset: 0;
+    opacity: .12;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .lyric {
+    position: absolute;
+    left: 4%; right: 4%;
+    bottom: 6%;
+    text-align: center;
+    font-size: clamp(1.1rem, 4.2vw, 2rem);
+    font-weight: 800;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    line-height: 1.15;
+    color: var(--navy);
+    text-shadow: 2px 2px 0 rgba(22,35,78,.15);
+    transition: color .05s linear;
+  }
+  .lyric.pink { color: var(--pink); }
+  .lyric.coral { color: var(--coral); }
+  .hud {
+    position: absolute; top: 3%; left: 3%; right: 3%;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--plum); opacity: .85;
+  }
+  .hint {
+    margin-top: 12px;
+    color: #aaa;
+    font: 12px/1.4 system-ui, sans-serif;
+    text-align: center;
+    max-width: 720px;
+  }
+</style>
+</head>
+<body>
+  <div>
+    <div class="stage" id="stage" title="Click to poke / restart loop">
+      <canvas id="c"></canvas>
+      <div class="grain"></div>
+      <div class="hud"><span id="beat">BEAT 0</span><span id="clock">0.0s</span></div>
+      <div class="lyric" id="lyric">Smallest crew that pulls the lever</div>
+    </div>
+    <p class="hint">Autoplays 12s loop · click during Beat 3 to drag-snap · click anytime to restart from Beat 1</p>
+  </div>
+<script>
+const PAPER = '#E5DECE', NAVY = '#16234E', PLUM = '#5E286D', PINK = '#F858A2', CORAL = '#EF8653';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const lyricEl = document.getElementById('lyric');
+const beatEl = document.getElementById('beat');
+const clockEl = document.getElementById('clock');
+const stage = document.getElementById('stage');
+
+const LYRICS = {
+  chorus: 'Smallest crew that pulls the lever',
+  b1a: 'One box, one address, ride together',
+  b1b: 'Born when you ask, gone when it\'s over',
+  b2a: 'Same job, new name on the chip',
+  b2b: 'Crash the light, spawn the twin',
+  b3a: 'Deck you land on is the only shore',
+  b3b: 'Pod don\'t swim when the host is gone',
+};
+
+let start = performance.now();
+let dragging = false;
+let dragX = 0, dragY = 0;
+let snapFlash = 0;
+let idHex = 'A1F3';
+
+function resize() {
+  const r = stage.getBoundingClientRect();
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resize);
+resize();
+
+function rndHex() {
+  return Math.floor(Math.random() * 0xffff).toString(16).toUpperCase().padStart(4, '0');
+}
+
+function setLyric(text, tone) {
+  lyricEl.textContent = text;
+  lyricEl.className = 'lyric' + (tone ? ' ' + tone : '');
+}
+
+function drawCapsule(x, y, w, h, fillAmt, show, idLabel, shadow) {
+  if (!show) return;
+  ctx.save();
+  if (shadow) {
+    ctx.fillStyle = 'rgba(22,35,78,.18)';
+    roundRect(x + 6, y + 8, w, h, h/2);
+    ctx.fill();
+  }
+  ctx.fillStyle = NAVY;
+  roundRect(x, y, w, h, h/2);
+  ctx.fill();
+  // fill bar (process)
+  if (fillAmt > 0) {
+    ctx.save();
+    roundRect(x, y, w, h, h/2);
+    ctx.clip();
+    ctx.fillStyle = PINK;
+    ctx.fillRect(x, y + h * (1 - fillAmt), w, h * fillAmt);
+    ctx.restore();
+  }
+  // ID chip
+  if (idLabel) {
+    const cw = 54, ch = 18;
+    ctx.fillStyle = PINK;
+    ctx.fillRect(x + w - cw - 14, y + (h - ch) / 2, cw, ch);
+    ctx.fillStyle = PAPER;
+    ctx.font = '700 11px "Arial Narrow", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(idLabel, x + w - cw/2 - 14, y + h/2 + 1);
+  }
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawShelf(w, h, dim) {
+  const shelfY = h * 0.62;
+  ctx.fillStyle = dim ? PLUM : NAVY;
+  ctx.globalAlpha = dim ? 0.35 : 1;
+  ctx.fillRect(w * 0.12, shelfY, w * 0.76, 14);
+  // node block
+  ctx.fillRect(w * 0.18, shelfY - 70, w * 0.28, 70);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = dim ? 'rgba(94,40,109,.5)' : PAPER;
+  ctx.font = '700 12px "Arial Narrow", sans-serif';
+  ctx.fillText('NODE', w * 0.22, shelfY - 40);
+}
+
+function frame(now) {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  let t = ((now - start) / 1000) % 12.5;
+  // 0–0.5 chorus hold mapped into loop start
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2, cy = h * 0.42;
+  const capW = Math.min(220, w * 0.38), capH = 72;
+
+  // Hard cues from pods-audio-lock.md: mute 3.37 · bitcrush 5.52 · cork-pop 9.80
+  const MUTE = 3.37, BITCRUSH = 5.52, CORK = 9.80;
+  let beat = 'CHORUS';
+  if (t < 0.5) {
+    setLyric(LYRICS.chorus);
+    beat = 'FADE';
+  } else if (t < MUTE) {
+    beat = '1 FILL/EXIT';
+    const u = (t - 0.5) / (MUTE - 0.5);
+    if (u < 0.7) {
+      setLyric(LYRICS.b1a, 'pink');
+      drawCapsule(cx - capW/2, cy - capH/2, capW, capH, Math.min(1, u / 0.55), true, null, true);
+    } else {
+      setLyric(LYRICS.b1b, 'pink');
+      drawCapsule(cx - capW/2, cy - capH/2, capW, capH, 1, true, null, true);
+    }
+  } else if (t < 4.0) {
+    // void after mute
+    beat = '1 VOID';
+    setLyric(LYRICS.b1b);
+  } else if (t < BITCRUSH) {
+    beat = '2 SCRAMBLE';
+    setLyric(LYRICS.b2a, 'pink');
+    const flicker = Math.floor(now / 40) % 2 ? rndHex() : idHex;
+    drawCapsule(cx - capW/2, cy - capH/2, capW, capH, 0.85, true, flicker, true);
+  } else if (t < 8) {
+    beat = '2 RESPAWN';
+    if (t < BITCRUSH + 0.05) idHex = rndHex();
+    setLyric(LYRICS.b2b, 'pink');
+    drawCapsule(cx - capW/2, cy - capH/2, capW, capH, 0.85, true, idHex, true);
+  } else if (t < 12) {
+    beat = '3 NODE';
+    const dim = t >= CORK;
+    drawShelf(w, h, dim);
+    setLyric(dim ? LYRICS.b3b : LYRICS.b3a, dim ? 'coral' : undefined);
+    let px = cx - capW/2, py = h * 0.62 - capH - 8;
+    if (dragging) {
+      px = dragX - capW/2;
+      py = dragY - capH/2;
+    } else if (dim) {
+      const shake = Math.sin(now / 30) * (snapFlash > 0 ? 6 : (t < CORK + 0.35 ? 6 : 0));
+      px = w * 0.22 + shake;
+      py = h * 0.62 - capH - 8;
+      if (t < CORK + 0.4 || snapFlash > 0) {
+        ctx.strokeStyle = CORAL;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(px - 4, py - 4, capW + 8, capH + 8);
+        if (snapFlash > 0) snapFlash -= 0.05;
+      }
+    }
+    drawCapsule(px, py, capW, capH, 0.7, true, idHex, !dim);
+  } else {
+    setLyric(LYRICS.chorus);
+    beat = 'HOLD';
+  }
+
+  beatEl.textContent = beat;
+  clockEl.textContent = t.toFixed(1) + 's';
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+stage.addEventListener('pointerdown', (e) => {
+  const t = ((performance.now() - start) / 1000) % 12.5;
+  if (t >= 8 && t < 12) {
+    dragging = true;
+    const r = stage.getBoundingClientRect();
+    dragX = e.clientX - r.left;
+    dragY = e.clientY - r.top;
+    stage.setPointerCapture(e.pointerId);
+  } else {
+    start = performance.now();
+    idHex = rndHex();
+  }
+});
+stage.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const r = stage.getBoundingClientRect();
+  dragX = e.clientX - r.left;
+  dragY = e.clientY - r.top;
+});
+stage.addEventListener('pointerup', () => {
+  if (dragging) {
+    dragging = false;
+    snapFlash = 1;
+  }
+});
+</script>
+</body>
+</html>
